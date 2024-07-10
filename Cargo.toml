@@ -1,0 +1,10 @@
+[package]
+name = "rsync_csv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenv = "0.15.0"
+log = "0.4.22"
+notify = "6.1.1"
+simple_logger = "5.0.0"
