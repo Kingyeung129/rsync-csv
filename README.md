@@ -29,7 +29,7 @@ For ssh config file (~/.ssh/config):
 ## Setup
 
 1. Git clone this repo
-2. Change variables in environment file ([.env_bak](.env_bak)) and rename it to ".env"
+2. Change variables in environment file ([.env.bak](.env.bak)) and rename it to ".env"
 
 ## Build
 
