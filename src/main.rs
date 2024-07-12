@@ -42,7 +42,7 @@ fn watch_for_file_changes(
 
 fn run_rsync(src_dir: &str, dest_user: &str, dest_host: &str, dest_dir: &str) {
     let rsync_command = format!(
-        "rsync -avz {} {}@{}:{}",
+        "rsync -aLvz --partial-dir=tmp {} {}@{}:{}",
         src_dir, dest_user, dest_host, dest_dir
     );
     info!("Running rsync command: {}", rsync_command);

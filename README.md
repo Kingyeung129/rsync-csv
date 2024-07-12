@@ -1,6 +1,6 @@
 # Documentation
 
-This repo contains rust code to perform rsync push operations on file changes in a local directory to a remote directory.
+This repo contains rust code to perform rsync push operations on file changes in a local directory to a remote directory. Supports following symbolic links to enumerate through subdirectories and files.
 
 ## Prerequisites
 
@@ -17,14 +17,29 @@ To generate ssh keys:
     </code>
 </pre>
 
-For ssh config file (~/.ssh/config):
+For ssh config file (~/.ssh/config), insert the following:
 <pre>
     <code>
+    # Change as appropriate
     Host HOSTNAME
         User USERNAME
         IdentityFile PATH_TO_IDENTITY_FILE
     </code>
 </pre>
+
+Add public key to authorized_keys file in remote host. Ensure that .ssh subdirectory is set with correct permissions in both local and remote hosts.
+
+<pre>
+    <code>
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/authorized_keys
+    </code>
+</pre>
+
+**Note:**
+
+1. Pay extra attention to permissions, if not ssh will fail especially in [strict mode](https://www.ibm.com/docs/en/was-liberty/nd?topic=system-avoiding-problems-ssh-in-collective).
+2. Execute permission on directory is required for traversing directory/folder
 
 ## Setup
 
@@ -38,3 +53,9 @@ For ssh config file (~/.ssh/config):
 ## Development
 
 <pre><code>cargo run</code></pre>
+
+## Production
+
+Run binary after building.
+
+<pre><code>./target/release/rsync_csv</code></pre>
