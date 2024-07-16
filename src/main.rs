@@ -2,7 +2,7 @@ use dotenv::dotenv;
 use log::{error, info};
 use notify::{event::{CreateKind, ModifyKind, DataChange, RenameMode}, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use simple_logger::SimpleLogger;
-use std::{env, process::Command, sync::mpsc::channel, time::Duration};
+use std::{env, process::Command, sync::mpsc::channel, time::Duration, path::Path};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, BufRead, BufReader};
@@ -36,7 +36,8 @@ fn watch_for_file_changes(
                         let table_name = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
                         info!("Table Name: {:?}", table_name);
                         if !table_name.unwrap().is_empty() {
-                            run_rsync(&src_dir, &dest_user, &dest_host, &dest_dir);
+                            run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir);
+                            delete_src_file(&event.paths[0].to_str().unwrap());
                         }
                     }
                 },
@@ -51,24 +52,39 @@ fn watch_for_file_changes(
 
 fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::io::Result<String> {
     // match column header templates and returns the matching table name as a String
-    let csv_file = File::open(csv_path).unwrap();
-    let reader = BufReader::new(csv_file);
-    let csv_headers = reader.lines().next().unwrap_or_else(|| Ok(String::new()))?;
-    info!("CSV Headers: {:?}", csv_headers);
-    match hashmap.get(csv_headers.trim_end_matches(",")) {
-        Some(table_name) => {
-            println!("Match found, table name: {:?}", table_name);
-            return Ok(table_name.to_string())
-        },
-        None => println!("No matching table header found. Ignoring csv file."),
+    if Path::new(csv_path).exists() {
+        let csv_file = File::open(csv_path).unwrap();
+        let reader = BufReader::new(csv_file);
+        let csv_headers = reader.lines().next().unwrap_or_else(|| Ok(String::new()))?;
+        info!("CSV Headers: {:?}", csv_headers);
+        match hashmap.get(csv_headers.trim_end_matches(",")) {
+            Some(table_name) => {
+                println!("Match found, table name: {:?}", table_name);
+                return Ok(table_name.to_string())
+            },
+            None => println!("No matching table header found. Ignoring csv file."),
+        }
     }
     Ok(String::new())
 }
 
-fn run_rsync(src_dir: &str, dest_user: &str, dest_host: &str, dest_dir: &str) {
+fn delete_src_file(src_file: &str) {
+    info!("Attempting to delete source file: {}", src_file);
+    let result = Command::new("rm")
+        .arg(src_file)
+        .output()
+        .expect("Failed to delete source file");
+    if result.status.success() {
+        info!("Deleted source file: {}", src_file);
+    } else {
+        error!("Error: {}", String::from_utf8_lossy(&result.stderr));
+    }
+}
+
+fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str) {
     let rsync_command = format!(
         "rsync -aLvz --partial-dir=tmp {} {}@{}:{}",
-        src_dir, dest_user, dest_host, dest_dir
+        src_file, dest_user, dest_host, dest_dir
     );
     info!("Running rsync command: {}", rsync_command);
     let result = Command::new("sh")
