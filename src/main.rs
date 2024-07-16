@@ -4,7 +4,7 @@ use notify::{event::{CreateKind, ModifyKind, DataChange, RenameMode}, Config, Ev
 use simple_logger::SimpleLogger;
 use std::{env, process::Command, sync::mpsc::channel, time::Duration, path::Path};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{Read, BufRead, BufReader};
 
 
@@ -33,10 +33,10 @@ fn watch_for_file_changes(
                 | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
                     if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
                         info!("CSV file event detected: {:?}", event);
-                        let table_name = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
-                        info!("Table Name: {:?}", table_name);
-                        if !table_name.unwrap().is_empty() {
-                            run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir);
+                        let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
+                        let table_name = match_result.unwrap().clone();
+                        if !table_name.is_empty() {
+                            run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
                             delete_src_file(&event.paths[0].to_str().unwrap());
                         }
                     }
@@ -59,10 +59,10 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
         info!("CSV Headers: {:?}", csv_headers);
         match hashmap.get(csv_headers.trim_end_matches(",")) {
             Some(table_name) => {
-                println!("Match found, table name: {:?}", table_name);
+                info!("Match table headers found, table name: {:?}", table_name);
                 return Ok(table_name.to_string())
             },
-            None => println!("No matching table header found. Ignoring csv file."),
+            None => info!("No matching table headers found. Ignoring csv file."),
         }
     }
     Ok(String::new())
@@ -70,21 +70,18 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
 
 fn delete_src_file(src_file: &str) {
     info!("Attempting to delete source file: {}", src_file);
-    let result = Command::new("rm")
-        .arg(src_file)
-        .output()
-        .expect("Failed to delete source file");
-    if result.status.success() {
-        info!("Deleted source file: {}", src_file);
+    if let Err(err) = fs::remove_file(src_file) {
+        error!("Error: {}", err);
     } else {
-        error!("Error: {}", String::from_utf8_lossy(&result.stderr));
+        info!("Deleted source file: {}", src_file);
     }
 }
 
-fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str) {
+fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, table_name: &str) {
+    let mkdir_command = format!("\"mkdir -p {} && rsync\"", Path::new(dest_dir).join(table_name).to_str().unwrap());
     let rsync_command = format!(
-        "rsync -aLvz --partial-dir=tmp {} {}@{}:{}",
-        src_file, dest_user, dest_host, dest_dir
+        "rsync -aLvz --partial-dir=tmp --rsync-path={} {} {}@{}:{}",
+        mkdir_command, src_file, dest_user, dest_host, Path::new(dest_dir).join(table_name).to_str().unwrap()
     );
     info!("Running rsync command: {}", rsync_command);
     let result = Command::new("sh")
