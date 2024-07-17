@@ -34,9 +34,13 @@ fn watch_for_file_changes(
                     if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
                         info!("CSV file event detected: {:?}", event);
                         let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
-                        let table_name = match_result.unwrap().clone();
-                        if !table_name.is_empty() {
-                            run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
+                        match match_result {
+                            Ok(table_name) => {
+                                if !table_name.is_empty() {
+                                    run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
+                                }
+                            }
+                            Err(e) => error!("Error: {:?}", e),
                         }
                     }
                 },
@@ -50,9 +54,9 @@ fn watch_for_file_changes(
 }
 
 fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::io::Result<String> {
-    // match column header templates and returns the matching table name as a String
+    // Match column header templates and returns the matching table name as a String
     if Path::new(csv_path).exists() {
-        let csv_file = File::open(csv_path).unwrap();
+        let csv_file = File::open(csv_path)?;
         let reader = BufReader::new(csv_file);
         let csv_headers = reader.lines().next().unwrap_or_else(|| Ok(String::new()))?;
         info!("CSV Headers: {:?}", csv_headers);
@@ -68,6 +72,7 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
 }
 
 fn delete_src_file(src_file: &str) {
+    // Delete source file after rsync
     info!("Attempting to delete source file: {}", src_file);
     if let Err(err) = fs::remove_file(src_file) {
         error!("Error: {}", err);
@@ -77,6 +82,7 @@ fn delete_src_file(src_file: &str) {
 }
 
 fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, table_name: &str) {
+    // Run rsync command to sync csv files to destination host
     let mkdir_command = format!("\"mkdir -p \"{}\" && rsync\"", Path::new(dest_dir).join(table_name).to_str().unwrap());
     let rsync_command = format!(
         "rsync -aLvz --partial-dir=tmp --rsync-path={} \"{}\" {}@{}:{}",
