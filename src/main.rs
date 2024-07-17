@@ -37,7 +37,6 @@ fn watch_for_file_changes(
                         let table_name = match_result.unwrap().clone();
                         if !table_name.is_empty() {
                             run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
-                            delete_src_file(&event.paths[0].to_str().unwrap());
                         }
                     }
                 },
@@ -46,7 +45,7 @@ fn watch_for_file_changes(
             Err(e) => error!("Watch error: {:?}", e),
         }
     }
-
+    
     Ok(())
 }
 
@@ -91,6 +90,7 @@ fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, t
         .expect("Failed to execute rsync command");
     if result.status.success() {
         info!("Success: {}", String::from_utf8_lossy(&result.stdout));
+        delete_src_file(&src_file);
     } else {
         error!("Error: {}", String::from_utf8_lossy(&result.stderr));
     }
