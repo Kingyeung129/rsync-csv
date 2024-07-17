@@ -80,7 +80,7 @@ fn delete_src_file(src_file: &str) {
 fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, table_name: &str) {
     let mkdir_command = format!("\"mkdir -p {} && rsync\"", Path::new(dest_dir).join(table_name).to_str().unwrap());
     let rsync_command = format!(
-        "rsync -aLvz --partial-dir=tmp --rsync-path={} {} {}@{}:{}",
+        "rsync -aLvz --partial-dir=tmp --rsync-path={} \"{}\" {}@{}:{}",
         mkdir_command, src_file, dest_user, dest_host, Path::new(dest_dir).join(table_name).to_str().unwrap()
     );
     info!("Running rsync command: {}", rsync_command);
