@@ -89,17 +89,21 @@ fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, t
         mkdir_command, src_file, dest_user, dest_host, Path::new(dest_dir).join(table_name).to_str().unwrap()
     );
     info!("Running rsync command: {}", rsync_command);
-    let result = Command::new("sh")
+    match Command::new("sh")
         .arg("-c")
         .arg(&rsync_command)
         .output()
-        .expect("Failed to execute rsync command");
-    if result.status.success() {
-        info!("Success: {}", String::from_utf8_lossy(&result.stdout));
-        delete_src_file(&src_file);
-    } else {
-        error!("Error: {}", String::from_utf8_lossy(&result.stderr));
-    }
+    {
+        Ok(output) => {
+            if output.status.success() {
+                info!("Success: {}", String::from_utf8_lossy(&output.stdout));
+                delete_src_file(&src_file);
+            } else {
+                error!("Error: {}", String::from_utf8_lossy(&output.stderr));
+            }
+        },
+        Err(e) => error!("Failed to execute rsync command. Error: {}", e),
+    }    
 }
 
 fn load_env_vars() -> (String, String, String, String, String) {
