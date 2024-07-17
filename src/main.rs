@@ -58,7 +58,7 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
         info!("CSV Headers: {:?}", csv_headers);
         match hashmap.get(csv_headers.trim_end_matches(",")) {
             Some(table_name) => {
-                info!("Match table headers found, table name: {:?}", table_name);
+                info!("Matching table headers found, table name: {:?}", table_name);
                 return Ok(table_name.to_string())
             },
             None => info!("No matching table headers found. Ignoring csv file."),
@@ -77,7 +77,7 @@ fn delete_src_file(src_file: &str) {
 }
 
 fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, table_name: &str) {
-    let mkdir_command = format!("\"mkdir -p {} && rsync\"", Path::new(dest_dir).join(table_name).to_str().unwrap());
+    let mkdir_command = format!("\"mkdir -p \"{}\" && rsync\"", Path::new(dest_dir).join(table_name).to_str().unwrap());
     let rsync_command = format!(
         "rsync -aLvz --partial-dir=tmp --rsync-path={} \"{}\" {}@{}:{}",
         mkdir_command, src_file, dest_user, dest_host, Path::new(dest_dir).join(table_name).to_str().unwrap()
