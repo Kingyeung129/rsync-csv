@@ -1,9 +1,9 @@
-use chrono;
+use chrono::{self, DateTime, TimeZone};
 use dotenv::dotenv;
 use log::{error, info};
 use notify::{event::{ModifyKind, DataChange}, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use simple_logger::SimpleLogger;
-use std::{env, path::{Path, PathBuf}, process::Command, sync::mpsc::channel, time::Duration};
+use std::{borrow::Cow, env, os::unix::fs::MetadataExt, path::{Path, PathBuf}, process::{Command, Output}, sync::mpsc::channel, time::Duration};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, BufRead, BufReader, Write};
@@ -30,25 +30,26 @@ fn watch_for_file_changes(
         match res {
             Ok(event) => match event.kind {
                 EventKind::Modify(ModifyKind::Data(DataChange::Any)) => {
-                    if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
-                        info!("CSV file event detected: {:?}", event);
-                        let src_file_basename = event.paths[0].file_name().unwrap().to_str().unwrap();
-                        let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
-                        match match_result {
-                            Ok(table_name) => {
-                                if !table_name.is_empty() {
-                                    run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
-                                }
-                            }
-                            Err(e) => {
-                                error!("Error matching column headers: {:?}", e);
-                                match &event.paths[0].parent() {
-                                    Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload failed! File: {src_file_basename} Reason: {e}").to_string()),
-                                    None => error!("Failed to get parent directory of source file."),
-                                }
-                            },
-                        }
-                    }
+                    let _  = create_metadata_file_on_remote(event.paths[0].to_str().unwrap());
+                    // if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
+                    //     info!("CSV file event detected: {:?}", event);
+                    //     let src_file_basename = event.paths[0].file_name().unwrap().to_str().unwrap();
+                    //     let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
+                    //     match match_result {
+                    //         Ok(table_name) => {
+                    //             if !table_name.is_empty() {
+                    //                 run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
+                    //             }
+                    //         }
+                    //         Err(e) => {
+                    //             error!("Error matching column headers: {:?}", e);
+                    //             match &event.paths[0].parent() {
+                    //                 Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload failed! File: {src_file_basename} Reason: {e}").to_string()),
+                    //                 None => error!("Failed to get parent directory of source file."),
+                    //             }
+                    //         },
+                    //     }
+                    // }
                 },
                 _ => (),
             },
@@ -181,6 +182,36 @@ fn load_headers(template_dir: String) -> std::io::Result<HashMap<String, String>
         }
     }
     Ok(table_headers)
+}
+
+fn create_metadata_file_on_remote(src_file: &str)-> std::io::Result<()> {
+    // Create metadata file on remote server
+    let attr = fs::metadata(src_file)?;
+    let mut username: String = "".to_string();
+    match Command::new("id")
+        .arg("-u")
+        .arg("-n")
+        .arg(attr.uid().to_string())
+        .output() {
+            Ok(output) => {
+                if output.status.success() {
+                    username = String::from_utf8_lossy(&output.stdout).strip_suffix("\n").unwrap().to_string();
+                } else {
+                    username = "".to_string();
+                }
+            },
+            Err(e) => {
+                error!("Failed to execute id command. Error: {}", e);
+            },
+        };
+    
+    let elapsed_secs = attr.created()?.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let upload_time = chrono::Local.timestamp_opt(elapsed_secs, 0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string();
+    let binding = PathBuf::from(src_file);
+    let src_file_basename = binding.file_name().unwrap().to_string_lossy().to_string();
+    let metadata_data = format!("{},{},{}", upload_time, username, src_file_basename);
+    info!("Metadata: {:?}", metadata_data);
+    Ok(())
 }
 
 fn main() -> std::io::Result<()> {
