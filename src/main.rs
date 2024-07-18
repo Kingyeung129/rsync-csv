@@ -1,11 +1,12 @@
+use chrono;
 use dotenv::dotenv;
 use log::{error, info};
-use notify::{event::{CreateKind, ModifyKind, DataChange, RenameMode}, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{event::{ModifyKind, DataChange}, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use simple_logger::SimpleLogger;
-use std::{env, process::Command, sync::mpsc::channel, time::Duration, path::Path};
+use std::{env, path::{Path, PathBuf}, process::Command, sync::mpsc::channel, time::Duration};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read, BufRead, BufReader};
+use std::io::{Read, BufRead, BufReader, Write};
 
 
 fn watch_for_file_changes(
@@ -28,11 +29,10 @@ fn watch_for_file_changes(
     for res in rx {
         match res {
             Ok(event) => match event.kind {
-                EventKind::Create(CreateKind::File)
-                | EventKind::Modify(ModifyKind::Data(DataChange::Any))
-                | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+                EventKind::Modify(ModifyKind::Data(DataChange::Any)) => {
                     if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
                         info!("CSV file event detected: {:?}", event);
+                        let src_file_basename = event.paths[0].file_name().unwrap().to_str().unwrap();
                         let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
                         match match_result {
                             Ok(table_name) => {
@@ -40,7 +40,13 @@ fn watch_for_file_changes(
                                     run_rsync(&event.paths[0].to_str().unwrap(), &dest_user, &dest_host, &dest_dir, &table_name);
                                 }
                             }
-                            Err(e) => error!("Error: {:?}", e),
+                            Err(e) => {
+                                error!("Error matching column headers: {:?}", e);
+                                match &event.paths[0].parent() {
+                                    Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload failed! File: {src_file_basename} Reason: {e}").to_string()),
+                                    None => error!("Failed to get parent directory of source file."),
+                                }
+                            },
                         }
                     }
                 },
@@ -57,6 +63,8 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
     // Match column header templates and returns the matching table name as a String
     if Path::new(csv_path).exists() {
         let csv_file = File::open(csv_path)?;
+        let binding = PathBuf::from(csv_path);
+        let csv_file_basename = binding.file_name().unwrap().to_str().unwrap();
         let reader = BufReader::new(csv_file);
         let csv_headers = reader.lines().next().unwrap_or_else(|| Ok(String::new()))?;
         info!("CSV Headers: {:?}", csv_headers);
@@ -65,7 +73,13 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
                 info!("Matching table headers found, table name: {:?}", table_name);
                 return Ok(table_name.to_string())
             },
-            None => info!("No matching table headers found. Ignoring csv file."),
+            None => {
+                info!("No matching table headers found. Ignoring csv file.");
+                match PathBuf::from(csv_path).parent() {
+                    Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload failed! File: {csv_file_basename} Reason: No matching table headers found.").to_string()),
+                    None => error!("Failed to get parent directory of source file."),
+                }
+            },
         }
     }
     Ok(String::new())
@@ -75,19 +89,36 @@ fn delete_src_file(src_file: &str) {
     // Delete source file after rsync
     info!("Attempting to delete source file: {}", src_file);
     if let Err(err) = fs::remove_file(src_file) {
-        error!("Error: {}", err);
+        error!("Error deleting source file: {}", err);
     } else {
         info!("Deleted source file: {}", src_file);
     }
 }
 
+fn log_upload_status(log_dir: &str, log_msg: String) {
+    // Create an upload log file at specified log directory
+    let log_file_path = Path::new(log_dir).join("upload.log");
+    let log_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    match fs::OpenOptions::new().append(true).create(true).open(log_file_path) {
+        Ok(mut log_file) => {
+            match log_file.write(format!("{log_time} - {log_msg}\n").as_bytes()) {
+                Ok(_) => info!("Upload log file updated successfully."),
+                Err(e) => error!("Failed to write to upload log file. Error: {}", e),
+            }
+        },
+        Err(e) => error!("Failed to create upload log file. Error: {}", e),
+    }
+}
+
 fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, table_name: &str) {
     // Run rsync command to sync csv files to destination host
-    let mkdir_command = format!("\"mkdir -p \"{}\" && rsync\"", Path::new(dest_dir).join(table_name).to_str().unwrap());
+    let mkdir_command = format!("\"mkdir -p \"{}\" && rsync\"", PathBuf::from(dest_dir).join(table_name).display());
     let rsync_command = format!(
         "rsync -aLvz --partial-dir=tmp --rsync-path={} \"{}\" {}@{}:{}",
-        mkdir_command, src_file, dest_user, dest_host, Path::new(dest_dir).join(table_name).to_str().unwrap()
+        mkdir_command, src_file, dest_user, dest_host, PathBuf::from(dest_dir).join(table_name).display()
     );
+    let binding = PathBuf::from(src_file);
+    let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
     info!("Running rsync command: {}", rsync_command);
     match Command::new("sh")
         .arg("-c")
@@ -97,9 +128,18 @@ fn run_rsync(src_file: &str, dest_user: &str, dest_host: &str, dest_dir: &str, t
         Ok(output) => {
             if output.status.success() {
                 info!("Success: {}", String::from_utf8_lossy(&output.stdout));
-                delete_src_file(&src_file);
+                delete_src_file(src_file);
+                match PathBuf::from(src_file).parent() {
+                    Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload succeeded! File: {src_file_basename}").to_string()),
+                    None => error!("Failed to get source file parent directory"),
+                }
             } else {
-                error!("Error: {}", String::from_utf8_lossy(&output.stderr));
+                let err_msg = String::from_utf8_lossy(&output.stderr);
+                error!("Error: {}", err_msg);
+                match PathBuf::from(src_file).parent() {
+                    Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload failed! File: {src_file_basename} Reason: {err_msg}").to_string()),
+                    None => error!("Failed to get source file parent directory"),
+                }
             }
         },
         Err(e) => error!("Failed to execute rsync command. Error: {}", e),
