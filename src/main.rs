@@ -24,6 +24,7 @@ fn watch_for_file_changes(
     dest_host: String,
     dest_dir: String,
     hashmap: HashMap<String, String>,
+    file_suffix: String
 ) -> notify::Result<()> {
     let (tx, rx) = channel();
 
@@ -55,8 +56,16 @@ fn watch_for_file_changes(
                             match match_result {
                                 Ok(table_name) => {
                                     if !table_name.is_empty() {
-                                        let metadata_file = match create_metadata_file(
+                                        let src_file_with_suffix = suffix_file_name(
                                             event.paths[0].to_str().unwrap(),
+                                            &file_suffix
+                                        )?;
+                                        info!(
+                                            "Source file with suffix: {:?}",
+                                            src_file_with_suffix
+                                        );
+                                        let metadata_file = match create_metadata_file(
+                                            &src_file_with_suffix,
                                         ) {
                                             Ok(file) => file,
                                             Err(e) => {
@@ -65,7 +74,7 @@ fn watch_for_file_changes(
                                             }
                                         };
                                         run_rsync(
-                                            &event.paths[0].to_str().unwrap(),
+                                            &src_file_with_suffix,
                                             &metadata_file,
                                             &dest_user,
                                             &dest_host,
@@ -129,8 +138,8 @@ fn delete_src_file_and_metadata(src_file: &str, src_file_metadata: &str) {
     );
     for file in files_to_remove {
         match fs::remove_file(file) {
-            Ok(_) => println!("Successfully removed {}", file),
-            Err(e) => eprintln!("Failed to remove {}: {}", file, e),
+            Ok(_) => info!("Successfully removed {}", file),
+            Err(e) => error!("Failed to remove {}: {}", file, e),
         }
     }
 }
@@ -206,7 +215,7 @@ fn run_rsync(
     }
 }
 
-fn load_env_vars() -> (String, String, String, String, String) {
+fn load_env_vars() -> (String, String, String, String, String, String) {
     // Load environment variables and set rsync src and dest paths
     dotenv().ok();
     let src_dir = env::var("SOURCE_DIR").unwrap();
@@ -214,7 +223,8 @@ fn load_env_vars() -> (String, String, String, String, String) {
     let dest_host = env::var("DEST_HOST").unwrap();
     let dest_dir = env::var("DEST_DIR").unwrap();
     let template_dir = env::var("TEMPLATE_DIR").unwrap();
-    (src_dir, dest_user, dest_host, dest_dir, template_dir)
+    let file_suffix = env::var("FILE_SUFFIX").unwrap();
+    (src_dir, dest_user, dest_host, dest_dir, template_dir, file_suffix)
 }
 
 fn load_headers(template_dir: String) -> std::io::Result<HashMap<String, String>> {
@@ -233,12 +243,27 @@ fn load_headers(template_dir: String) -> std::io::Result<HashMap<String, String>
                     headers = headers.trim().to_string();
                     table_headers.insert(headers, table_name);
                 }
-                None => println!("Invalid File Name"),
+                None => info!("Invalid File Name"),
             },
-            None => println!("No File Name"),
+            None => error!("No File Name"),
         }
     }
     Ok(table_headers)
+}
+
+fn suffix_file_name(src_file: &str, file_suffix: &str) -> std::io::Result<String> {
+    // Rename source file by suffixiing source file with timestamp
+    let binding = PathBuf::from(src_file);
+    let src_file_basename_no_ext = binding.file_stem().unwrap().to_string_lossy().to_string();
+    let src_file_extension = binding.extension().unwrap().to_string_lossy().to_string();
+    let src_file_suffix = chrono::Local::now().format(file_suffix).to_string();
+    let src_file_with_suffix = format!("{}_{}.{}", src_file_basename_no_ext, src_file_suffix, src_file_extension);
+    let src_file_with_suffix = binding.with_file_name(src_file_with_suffix);
+    if let Err(err) = fs::rename(src_file, &src_file_with_suffix) {
+        error!("Failed to rename source file. Error: {}", err);
+        return Err(err)?;
+    }
+    Ok(src_file_with_suffix.to_str().unwrap().to_string())
 }
 
 fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
@@ -297,8 +322,8 @@ fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
 
 fn main() -> std::io::Result<()> {
     SimpleLogger::new().init().unwrap();
-    let (src_dir, dest_user, dest_host, dest_dir, template_dir) = load_env_vars();
+    let (src_dir, dest_user, dest_host, dest_dir, template_dir, file_suffix) = load_env_vars();
     let hashmap = load_headers(template_dir)?;
-    let _ = watch_for_file_changes(src_dir, dest_user, dest_host, dest_dir, hashmap);
+    let _ = watch_for_file_changes(src_dir, dest_user, dest_host, dest_dir, hashmap, file_suffix);
     Ok(())
 }
