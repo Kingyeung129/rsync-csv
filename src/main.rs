@@ -72,7 +72,7 @@ fn watch_for_file_changes(
                 }
             }
         }
-        if last_event_time.elapsed().as_secs() > csv_event_wait_seconds && !event_vec.is_empty() {
+        if (last_event_time.elapsed().as_secs() > csv_event_wait_seconds || event_vec.len() > csv_event_upper_limit as usize) && !event_vec.is_empty() {
             match handle_csv_file_event(
                 &dest_user,
                 &dest_host,
@@ -84,20 +84,6 @@ fn watch_for_file_changes(
                 Ok(_) => event_vec.clear(),
                 Err(e) => error!("Error handling csv file event: {:?}", e),
             }
-            // for chunk in event_vec.chunks(csv_event_upper_limit as usize) {
-            //     match handle_csv_file_event(
-            //         &dest_user,
-            //         &dest_host,
-            //         &dest_dir,
-            //         &hashmap,
-            //         &file_suffix,
-            //         &chunk.to_vec(),
-            //     ) {
-            //         Ok(_) => (),
-            //         Err(e) => error!("Error handling csv file event: {:?}", e),
-            //     }
-            // }
-            // event_vec.clear();
         }
     }
 }
