@@ -72,17 +72,20 @@ fn watch_for_file_changes(
             }
         }
         if last_event_time.elapsed().as_secs() > csv_event_wait_seconds && !event_vec.is_empty() {
-            match handle_csv_file_event(
-                &dest_user,
-                &dest_host,
-                &dest_dir,
-                &hashmap,
-                &file_suffix,
-                &event_vec,
-            ) {
-                Ok(_) => event_vec.clear(),
-                Err(e) => error!("Error handling csv file event: {:?}", e),
+            for chunk in event_vec.chunks(20) {
+                match handle_csv_file_event(
+                    &dest_user,
+                    &dest_host,
+                    &dest_dir,
+                    &hashmap,
+                    &file_suffix,
+                    &chunk.to_vec(),
+                ) {
+                    Ok(_) => (),
+                    Err(e) => error!("Error handling csv file event: {:?}", e),
+                }
             }
+            event_vec.clear();
         }
     }
 }
@@ -150,7 +153,7 @@ fn handle_csv_file_event(
             }
         }
     }
-    run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir);
+    run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, 0);
     Ok(())
 }
 
@@ -218,6 +221,7 @@ fn run_rsync(
     dest_user: &str,
     dest_host: &str,
     dest_dir: &str,
+    retry_count: u8,
 ) {
     // Run rsync command to sync csv files to destination host
     debug!("Rsync Hashmap: {:?}", rsync_hashmap);
@@ -230,7 +234,7 @@ fn run_rsync(
             PathBuf::from(dest_dir).join(table_name).display()
         );
         let rsync_command = format!(
-            "rsync -aLvz --partial-dir=tmp --rsync-path={} {} {} {}@{}:{}",
+            "rsync -aLvz --partial-dir=tmp --timeout=10 --rsync-path={} {} {} {}@{}:{}",
             mkdir_command,
             src_files.join(" "),
             metadata_files.join(" "),
@@ -260,18 +264,30 @@ fn run_rsync(
                 } else {
                     let err_msg = String::from_utf8_lossy(&output.stderr);
                     error!("Error: {}", err_msg);
-                    for src_file in src_files {
-                        let binding = PathBuf::from(src_file);
-                        let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
-                        match PathBuf::from(src_file).parent() {
-                            Some(log_dir) => log_upload_status(
-                                log_dir.to_str().unwrap(),
-                                format!(
-                                    "Upload failed! File: {src_file_basename} Reason: {err_msg}"
-                                )
-                                .to_string(),
-                            ),
-                            None => error!("Failed to get source file parent directory"),
+                    if retry_count < 3 {
+                        info!("Retrying rsync command...");
+                        run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
+                        // if err_msg.contains("kex_exchange_identification") {
+                        //     info!("Retrying rsync command...");
+                        //     run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
+                        // } else if err_msg.contains("timeout in data send/receive (code 30)") {
+                        //     info!("Retrying rsync command...");
+                        //     run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
+                        // }
+                    } else {
+                        for src_file in src_files {
+                            let binding = PathBuf::from(src_file);
+                            let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
+                            match PathBuf::from(src_file).parent() {
+                                Some(log_dir) => log_upload_status(
+                                    log_dir.to_str().unwrap(),
+                                    format!(
+                                        "Upload failed! File: {src_file_basename} Reason: {err_msg}"
+                                    )
+                                    .to_string(),
+                                ),
+                                None => error!("Failed to get source file parent directory"),
+                            }
                         }
                     }
                 }
