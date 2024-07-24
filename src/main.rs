@@ -1,8 +1,8 @@
 use chrono::{self, TimeZone};
 use dotenv::dotenv;
-use log::{error, info};
+use log::{debug, error, info};
 use notify::{
-    event::{DataChange, ModifyKind},
+    event::{CreateKind, DataChange, ModifyKind},
     Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use simple_logger::SimpleLogger;
@@ -15,7 +15,9 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::mpsc::channel,
+    sync::mpsc::TryRecvError::Empty,
     time::Duration,
+    time::Instant,
 };
 
 fn watch_for_file_changes(
@@ -24,7 +26,8 @@ fn watch_for_file_changes(
     dest_host: String,
     dest_dir: String,
     hashmap: HashMap<String, String>,
-    file_suffix: String
+    file_suffix: String,
+    csv_event_wait_seconds: u64,
 ) -> notify::Result<()> {
     let (tx, rx) = channel();
 
@@ -41,65 +44,112 @@ fn watch_for_file_changes(
         Err(err)?;
     }
 
-    for res in rx {
-        match res {
-            Ok(event) => {
-                match event.kind {
-                    EventKind::Modify(ModifyKind::Data(DataChange::Any)) => {
-                        // let _  = create_metadata_file(event.paths[0].to_str().unwrap());
+    let mut event_vec: Vec<notify::Event> = Vec::new();
+    let mut last_event_time = Instant::now();
+
+    loop {
+        match rx.try_recv() {
+            Ok(res) => match res {
+                Ok(event) => match event.kind {
+                    EventKind::Create(CreateKind::File)
+                    | EventKind::Modify(ModifyKind::Data(DataChange::Any)) => {
                         if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
                             info!("CSV file event detected: {:?}", event);
-                            let src_file_basename =
-                                event.paths[0].file_name().unwrap().to_str().unwrap();
-                            let match_result =
-                                match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
-                            match match_result {
-                                Ok(table_name) => {
-                                    if !table_name.is_empty() {
-                                        let src_file_with_suffix = suffix_file_name(
-                                            event.paths[0].to_str().unwrap(),
-                                            &file_suffix
-                                        )?;
-                                        info!(
-                                            "Source file with suffix: {:?}",
-                                            src_file_with_suffix
-                                        );
-                                        let metadata_file = match create_metadata_file(
-                                            &src_file_with_suffix,
-                                        ) {
-                                            Ok(file) => file,
-                                            Err(e) => {
-                                                error!("Error creating metadata file: {:?}", e);
-                                                String::new()
-                                            }
-                                        };
-                                        run_rsync(
-                                            &src_file_with_suffix,
-                                            &metadata_file,
-                                            &dest_user,
-                                            &dest_host,
-                                            &dest_dir,
-                                            &table_name,
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Error matching column headers: {:?}", e);
-                                    match &event.paths[0].parent() {
-                                    Some(log_dir) => log_upload_status(log_dir.to_str().unwrap(), format!("Upload failed! File: {src_file_basename} Reason: {e}").to_string()),
-                                    None => error!("Failed to get parent directory of source file."),
-                                }
-                                }
-                            }
+                            event_vec.push(event);
+                            last_event_time = Instant::now();
                         }
                     }
                     _ => (),
+                },
+                Err(e) => error!("Watch error: {:?}", e),
+            },
+            Err(e) => {
+                if e == Empty {
+                    ();
+                } else {
+                    error!("Error receiving event: {:?}", e);
                 }
             }
-            Err(e) => error!("Watch error: {:?}", e),
+        }
+        if last_event_time.elapsed().as_secs() > csv_event_wait_seconds && !event_vec.is_empty() {
+            match handle_csv_file_event(
+                &dest_user,
+                &dest_host,
+                &dest_dir,
+                &hashmap,
+                &file_suffix,
+                &event_vec,
+            ) {
+                Ok(_) => event_vec.clear(),
+                Err(e) => error!("Error handling csv file event: {:?}", e),
+            }
         }
     }
+}
 
+fn handle_csv_file_event(
+    dest_user: &str,
+    dest_host: &str,
+    dest_dir: &str,
+    hashmap: &HashMap<String, String>,
+    file_suffix: &str,
+    event_vec: &Vec<notify::Event>,
+) -> std::io::Result<()> {
+    // Handle csv file events
+    info!(
+        "Handling CSV file events. Total event count: {:?}",
+        event_vec.len()
+    );
+    // debug!("Event Vec: {:?}", event_vec);
+    /*
+    Rsync hashmap structure:
+    {
+        "table_name": {
+            "src_files": [src_file],
+            "metadata_files": [metadata_file]
+        }
+    }
+     */
+    let mut rsync_hashmap: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+    for event in event_vec.iter() {
+        let src_file_basename = event.paths[0].file_name().unwrap().to_str().unwrap();
+        let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
+        match match_result {
+            Ok(table_name) => {
+                if !table_name.is_empty() {
+                    let src_file_with_suffix =
+                        suffix_file_name(event.paths[0].to_str().unwrap(), &file_suffix)?;
+                    info!("Source file with suffix: {:?}", src_file_with_suffix);
+                    let metadata_file = match create_metadata_file(&src_file_with_suffix) {
+                        Ok(file) => file,
+                        Err(e) => {
+                            error!("Error creating metadata file: {:?}", e);
+                            String::new()
+                        }
+                    };
+                    let table_entry = rsync_hashmap.entry(table_name).or_insert(HashMap::new());
+                    table_entry.entry("src_files".to_string()).or_insert(Vec::new()).push(src_file_with_suffix);
+                    table_entry.entry("metadata_files".to_string()).or_insert(Vec::new()).push(metadata_file);
+                }
+            }
+            Err(e) => {
+                error!("Error matching column headers: {:?}", e);
+                match &event.paths[0].parent() {
+                    Some(log_dir) => log_upload_status(
+                        log_dir.to_str().unwrap(),
+                        format!("Upload failed! File: {src_file_basename} Reason: {e}").to_string(),
+                    ),
+                    None => error!("Failed to get parent directory of source file."),
+                }
+            }
+        }
+    }
+    run_rsync(
+        &rsync_hashmap,
+        &dest_user,
+        &dest_host,
+        &dest_dir,
+    );
     Ok(())
 }
 
@@ -126,6 +176,7 @@ fn match_col_headers(csv_path: &str, hashmap: &HashMap<String, String>) -> std::
             }
         }
     }
+    // If csv file does not exist or no matching table headers, return empty string
     Ok(String::new())
 }
 
@@ -162,60 +213,71 @@ fn log_upload_status(log_dir: &str, log_msg: String) {
 }
 
 fn run_rsync(
-    src_file: &str,
-    src_file_metadata: &str,
+    rsync_hashmap: &HashMap<String, HashMap<String, Vec<String>>>,
     dest_user: &str,
     dest_host: &str,
     dest_dir: &str,
-    table_name: &str,
 ) {
     // Run rsync command to sync csv files to destination host
-    let mkdir_command = format!(
-        "\"mkdir -p \"{}\" && rsync\"",
-        PathBuf::from(dest_dir).join(table_name).display()
-    );
-    let rsync_command = format!(
-        "rsync -aLvz --partial-dir=tmp --rsync-path={} \"{}\" \"{}\" {}@{}:{}",
-        mkdir_command,
-        src_file,
-        src_file_metadata,
-        dest_user,
-        dest_host,
-        PathBuf::from(dest_dir).join(table_name).display()
-    );
-    let binding = PathBuf::from(src_file);
-    let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
-    info!("Running rsync command: {}", rsync_command);
-    match Command::new("sh").arg("-c").arg(&rsync_command).output() {
-        Ok(output) => {
-            if output.status.success() {
-                info!("Success: {}", String::from_utf8_lossy(&output.stdout));
-                delete_src_file_and_metadata(src_file, src_file_metadata);
-                match PathBuf::from(src_file).parent() {
-                    Some(log_dir) => log_upload_status(
-                        log_dir.to_str().unwrap(),
-                        format!("Upload succeeded! File: {src_file_basename}").to_string(),
-                    ),
-                    None => error!("Failed to get source file parent directory"),
-                }
-            } else {
-                let err_msg = String::from_utf8_lossy(&output.stderr);
-                error!("Error: {}", err_msg);
-                match PathBuf::from(src_file).parent() {
-                    Some(log_dir) => log_upload_status(
-                        log_dir.to_str().unwrap(),
-                        format!("Upload failed! File: {src_file_basename} Reason: {err_msg}")
-                            .to_string(),
-                    ),
-                    None => error!("Failed to get source file parent directory"),
+    debug!("Rsync Hashmap: {:?}", rsync_hashmap);
+    for table_name in rsync_hashmap.keys() {
+        let table_entry = rsync_hashmap.get(table_name).unwrap();
+        let src_files = table_entry.get("src_files").unwrap();
+        let metadata_files = table_entry.get("metadata_files").unwrap();
+        let mkdir_command = format!(
+            "\"mkdir -p \"{}\" && rsync\"",
+            PathBuf::from(dest_dir).join(table_name).display()
+        );
+        let rsync_command = format!(
+            "rsync -aLvz --partial-dir=tmp --rsync-path={} {} {} {}@{}:{}",
+            mkdir_command,
+            src_files.join(" "),
+            metadata_files.join(" "),
+            dest_user,
+            dest_host,
+            PathBuf::from(dest_dir).join(table_name).display()
+        );
+        info!("Running rsync command: {}", rsync_command);
+        match Command::new("sh").arg("-c").arg(&rsync_command).output() {
+            Ok(output) => {
+                if output.status.success() {
+                    info!("Success: {}", String::from_utf8_lossy(&output.stdout));
+                    for src_file in src_files {
+                        let src_file_metadata = &metadata_files[src_files.iter().position(|x| x == src_file).unwrap()];
+                        let binding = PathBuf::from(src_file);
+                        let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
+                        delete_src_file_and_metadata(src_file, src_file_metadata);
+                        match PathBuf::from(src_file).parent() {
+                            Some(log_dir) => log_upload_status(
+                                log_dir.to_str().unwrap(),
+                                format!("Upload succeeded! File: {src_file_basename}").to_string(),
+                            ),
+                            None => error!("Failed to get source file parent directory"),
+                        }
+                    }
+                } else {
+                    let err_msg = String::from_utf8_lossy(&output.stderr);
+                    error!("Error: {}", err_msg);
+                    for src_file in src_files {
+                        let binding = PathBuf::from(src_file);
+                        let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
+                        match PathBuf::from(src_file).parent() {
+                            Some(log_dir) => log_upload_status(
+                                log_dir.to_str().unwrap(),
+                                format!("Upload failed! File: {src_file_basename} Reason: {err_msg}")
+                                    .to_string(),
+                            ),
+                            None => error!("Failed to get source file parent directory"),
+                        }
+                    }
                 }
             }
+            Err(e) => error!("Failed to execute rsync command. Error: {}", e),
         }
-        Err(e) => error!("Failed to execute rsync command. Error: {}", e),
     }
 }
 
-fn load_env_vars() -> (String, String, String, String, String, String) {
+fn load_env_vars() -> (String, String, String, String, String, String, u64) {
     // Load environment variables and set rsync src and dest paths
     dotenv().ok();
     let src_dir = env::var("SOURCE_DIR").unwrap();
@@ -224,7 +286,19 @@ fn load_env_vars() -> (String, String, String, String, String, String) {
     let dest_dir = env::var("DEST_DIR").unwrap();
     let template_dir = env::var("TEMPLATE_DIR").unwrap();
     let file_suffix = env::var("FILE_SUFFIX").unwrap();
-    (src_dir, dest_user, dest_host, dest_dir, template_dir, file_suffix)
+    let csv_event_wait_seconds = env::var("CSV_EVENT_WAIT_SECONDS")
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    (
+        src_dir,
+        dest_user,
+        dest_host,
+        dest_dir,
+        template_dir,
+        file_suffix,
+        csv_event_wait_seconds,
+    )
 }
 
 fn load_headers(template_dir: String) -> std::io::Result<HashMap<String, String>> {
@@ -257,7 +331,10 @@ fn suffix_file_name(src_file: &str, file_suffix: &str) -> std::io::Result<String
     let src_file_basename_no_ext = binding.file_stem().unwrap().to_string_lossy().to_string();
     let src_file_extension = binding.extension().unwrap().to_string_lossy().to_string();
     let src_file_suffix = chrono::Local::now().format(file_suffix).to_string();
-    let src_file_with_suffix = format!("{}_{}.{}", src_file_basename_no_ext, src_file_suffix, src_file_extension);
+    let src_file_with_suffix = format!(
+        "{}_{}.{}",
+        src_file_basename_no_ext, src_file_suffix, src_file_extension
+    );
     let src_file_with_suffix = binding.with_file_name(src_file_with_suffix);
     if let Err(err) = fs::rename(src_file, &src_file_with_suffix) {
         error!("Failed to rename source file. Error: {}", err);
@@ -322,8 +399,17 @@ fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
 
 fn main() -> std::io::Result<()> {
     SimpleLogger::new().init().unwrap();
-    let (src_dir, dest_user, dest_host, dest_dir, template_dir, file_suffix) = load_env_vars();
+    let (src_dir, dest_user, dest_host, dest_dir, template_dir, file_suffix, csv_event_wait_seconds) =
+        load_env_vars();
     let hashmap = load_headers(template_dir)?;
-    let _ = watch_for_file_changes(src_dir, dest_user, dest_host, dest_dir, hashmap, file_suffix);
+    let _ = watch_for_file_changes(
+        src_dir,
+        dest_user,
+        dest_host,
+        dest_dir,
+        hashmap,
+        file_suffix,
+        csv_event_wait_seconds,
+    );
     Ok(())
 }
