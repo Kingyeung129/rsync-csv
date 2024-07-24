@@ -234,10 +234,10 @@ fn run_rsync(
             PathBuf::from(dest_dir).join(table_name).display()
         );
         let rsync_command = format!(
-            "rsync -aLvz --partial-dir=tmp --timeout=10 --rsync-path={} {} {} {}@{}:{}",
+            "rsync -aLvz --partial-dir=tmp --timeout=10 --rsync-path={} \"{}\" \"{}\" {}@{}:{}",
             mkdir_command,
-            src_files.join(" "),
-            metadata_files.join(" "),
+            src_files.join("\" \""),
+            metadata_files.join("\" \""),
             dest_user,
             dest_host,
             PathBuf::from(dest_dir).join(table_name).display()
