@@ -128,8 +128,14 @@ fn handle_csv_file_event(
                         }
                     };
                     let table_entry = rsync_hashmap.entry(table_name).or_insert(HashMap::new());
-                    table_entry.entry("src_files".to_string()).or_insert(Vec::new()).push(src_file_with_suffix);
-                    table_entry.entry("metadata_files".to_string()).or_insert(Vec::new()).push(metadata_file);
+                    table_entry
+                        .entry("src_files".to_string())
+                        .or_insert(Vec::new())
+                        .push(src_file_with_suffix);
+                    table_entry
+                        .entry("metadata_files".to_string())
+                        .or_insert(Vec::new())
+                        .push(metadata_file);
                 }
             }
             Err(e) => {
@@ -144,12 +150,7 @@ fn handle_csv_file_event(
             }
         }
     }
-    run_rsync(
-        &rsync_hashmap,
-        &dest_user,
-        &dest_host,
-        &dest_dir,
-    );
+    run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir);
     Ok(())
 }
 
@@ -243,7 +244,8 @@ fn run_rsync(
                 if output.status.success() {
                     info!("Success: {}", String::from_utf8_lossy(&output.stdout));
                     for src_file in src_files {
-                        let src_file_metadata = &metadata_files[src_files.iter().position(|x| x == src_file).unwrap()];
+                        let src_file_metadata =
+                            &metadata_files[src_files.iter().position(|x| x == src_file).unwrap()];
                         let binding = PathBuf::from(src_file);
                         let src_file_basename = binding.file_name().unwrap().to_str().unwrap();
                         delete_src_file_and_metadata(src_file, src_file_metadata);
@@ -264,8 +266,10 @@ fn run_rsync(
                         match PathBuf::from(src_file).parent() {
                             Some(log_dir) => log_upload_status(
                                 log_dir.to_str().unwrap(),
-                                format!("Upload failed! File: {src_file_basename} Reason: {err_msg}")
-                                    .to_string(),
+                                format!(
+                                    "Upload failed! File: {src_file_basename} Reason: {err_msg}"
+                                )
+                                .to_string(),
                             ),
                             None => error!("Failed to get source file parent directory"),
                         }
@@ -399,8 +403,15 @@ fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
 
 fn main() -> std::io::Result<()> {
     SimpleLogger::new().init().unwrap();
-    let (src_dir, dest_user, dest_host, dest_dir, template_dir, file_suffix, csv_event_wait_seconds) =
-        load_env_vars();
+    let (
+        src_dir,
+        dest_user,
+        dest_host,
+        dest_dir,
+        template_dir,
+        file_suffix,
+        csv_event_wait_seconds,
+    ) = load_env_vars();
     let hashmap = load_headers(template_dir)?;
     let _ = watch_for_file_changes(
         src_dir,
