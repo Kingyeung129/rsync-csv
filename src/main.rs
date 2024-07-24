@@ -383,7 +383,7 @@ fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
         .to_string();
     let binding = PathBuf::from(src_file);
     let src_file_basename = binding.file_name().unwrap().to_string_lossy().to_string();
-    let metadata_data = format!("{},{},{}", upload_time, username, src_file_basename);
+    let metadata_data = format!("{},{},{}\n", upload_time, username, src_file_basename);
     let metadata_file_path = format!("{}.metadata", src_file);
     info!(
         "Creating metadata file {:?} with metadata: {:?}",
