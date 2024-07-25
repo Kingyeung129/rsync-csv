@@ -11,6 +11,7 @@ use std::{
     env,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
+    net::TcpStream,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::Command,
@@ -153,7 +154,14 @@ fn handle_csv_file_event(
     }
     match run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, 0) {
         Ok(_) => {
-            ();
+            let msg = serde_json::to_string(&rsync_hashmap).unwrap();
+            // dbg!(&msg);
+            let dest_addr = format!("{}:50000", dest_host);
+            if let Ok(mut stream) = TcpStream::connect(dest_addr) {
+                let _ = stream.write(&msg.into_bytes());
+            } else {
+                error!("Failed to connect to destination host ({}) on port 50000", dest_host);
+            }
         },
         Err(_) => (),
     }
