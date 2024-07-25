@@ -6,11 +6,11 @@ use notify::{
     Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use simple_logger::SimpleLogger;
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
 use std::{
+    collections::HashMap,
     env,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::Command,
@@ -151,7 +151,12 @@ fn handle_csv_file_event(
             }
         }
     }
-    run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, 0);
+    match run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, 0) {
+        Ok(_) => {
+            ();
+        },
+        Err(_) => (),
+    }
     Ok(())
 }
 
@@ -220,7 +225,7 @@ fn run_rsync(
     dest_host: &str,
     dest_dir: &str,
     retry_count: u8,
-) {
+) -> Result<(), String> {
     // Run rsync command to sync csv files to destination host
     debug!("Rsync Hashmap: {:?}", rsync_hashmap);
     for table_name in rsync_hashmap.keys() {
@@ -256,7 +261,10 @@ fn run_rsync(
                                 log_dir.to_str().unwrap(),
                                 format!("Upload succeeded! File: {src_file_basename}").to_string(),
                             ),
-                            None => error!("Failed to get source file parent directory"),
+                            None => {
+                                error!("Failed to get source file parent directory");
+                                Err("Failed to get source file parent directory")?;
+                            },
                         }
                     }
                 } else {
@@ -265,13 +273,6 @@ fn run_rsync(
                     if retry_count < 3 {
                         info!("Retrying rsync command...");
                         run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
-                        // if err_msg.contains("kex_exchange_identification") {
-                        //     info!("Retrying rsync command...");
-                        //     run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
-                        // } else if err_msg.contains("timeout in data send/receive (code 30)") {
-                        //     info!("Retrying rsync command...");
-                        //     run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
-                        // }
                     } else {
                         for src_file in src_files {
                             let binding = PathBuf::from(src_file);
@@ -284,15 +285,22 @@ fn run_rsync(
                                     )
                                     .to_string(),
                                 ),
-                                None => error!("Failed to get source file parent directory"),
+                                None => {
+                                    error!("Failed to get source file parent directory");
+                                    Err("Failed to get source file parent directory")?;
+                                },
                             }
                         }
                     }
                 }
             }
-            Err(e) => error!("Failed to execute rsync command. Error: {}", e),
+            Err(e) => {
+                error!("Failed to execute rsync command. Error: {}", e);
+                Err("Failed to get source file parent directory")?;
+            },
         }
     }
+    Ok(())
 }
 
 fn load_env_vars() -> (String, String, String, String, String, String, u64, u64) {
