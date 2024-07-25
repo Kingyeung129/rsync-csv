@@ -280,7 +280,7 @@ fn run_rsync(
                     error!("Error: {}", err_msg);
                     if retry_count < 3 {
                         info!("Retrying rsync command...");
-                        run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
+                        let _ = run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
                     } else {
                         for src_file in src_files {
                             let binding = PathBuf::from(src_file);
