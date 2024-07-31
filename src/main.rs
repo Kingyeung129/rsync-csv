@@ -57,10 +57,18 @@ fn watch_for_file_changes(
                     | EventKind::Modify(ModifyKind::Data(DataChange::Any)) => {
                         if event.paths[0].extension().and_then(|s| s.to_str()) == Some("csv") {
                             info!("CSV file event detected: {:?}", event);
-                            event_vec.push(event);
+                            event_vec.push(event.clone());
                             last_event_time = Instant::now();
                         }
-                    }
+                        if let Ok(metadata) = fs::symlink_metadata(&event.paths[0]) {
+                            if metadata.file_type().is_symlink() {
+                                info!("Detected symlink creation, adding it to watcher...");
+                                if let Err(e) = watcher.watch(&event.paths[0], RecursiveMode::NonRecursive) {
+                                    error!("Error watching symlink file: {:?}", e);
+                                }
+                            }
+                        }
+                    },
                     _ => (),
                 },
                 Err(e) => error!("Watch error: {:?}", e),
