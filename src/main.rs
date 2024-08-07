@@ -81,7 +81,10 @@ fn watch_for_file_changes(
                 }
             }
         }
-        if (last_event_time.elapsed().as_secs() > csv_event_wait_seconds || event_vec.len() > csv_event_upper_limit as usize) && !event_vec.is_empty() {
+        if (last_event_time.elapsed().as_secs() > csv_event_wait_seconds
+            || event_vec.len() > csv_event_upper_limit as usize)
+            && !event_vec.is_empty()
+        {
             match handle_csv_file_event(
                 &dest_user,
                 &dest_host,
@@ -115,20 +118,23 @@ fn handle_csv_file_event(
     Rsync hashmap structure:
     {
         "table_name": {
-            "src_files": [src_file],
-            "metadata_files": [metadata_file]
+            "src_files": [src_file...],
+            "metadata_files": [metadata_file...]
+            "uploaded_by": [username...]
         }
     }
      */
     let mut rsync_hashmap: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for event in event_vec.iter() {
+        let src_file_path = event.paths[0].to_str().unwrap();
         let src_file_basename = event.paths[0].file_name().unwrap().to_str().unwrap();
-        let match_result = match_col_headers(event.paths[0].to_str().unwrap(), &hashmap);
+        let match_result = match_col_headers(src_file_path, &hashmap);
         match match_result {
             Ok(table_name) => {
                 if !table_name.is_empty() {
+                    let username = get_file_owner(src_file_path).unwrap();
                     let src_file_with_suffix =
-                        suffix_file_name(event.paths[0].to_str().unwrap(), &file_suffix)?;
+                        suffix_file_name(src_file_path, &file_suffix)?;
                     info!("Source file with suffix: {:?}", src_file_with_suffix);
                     let metadata_file = match create_metadata_file(&src_file_with_suffix) {
                         Ok(file) => file,
@@ -146,8 +152,12 @@ fn handle_csv_file_event(
                         .entry("metadata_files".to_string())
                         .or_insert(Vec::new())
                         .push(metadata_file);
+                    table_entry
+                        .entry("uploaded_by".to_string())
+                        .or_insert(Vec::new())
+                        .push(username);
                 }
-            }
+            },
             Err(e) => {
                 error!("Error matching column headers: {:?}", e);
                 match &event.paths[0].parent() {
@@ -163,7 +173,7 @@ fn handle_csv_file_event(
     match run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, 0) {
         Ok(_) => {
             let msg = serde_json::to_string(&rsync_hashmap).unwrap();
-            // dbg!(&msg);
+            dbg!(&msg);
             let dest_addr = format!("{}:50000", dest_host);
             if let Ok(mut stream) = TcpStream::connect(dest_addr) {
                 let _ = stream.write(&msg.into_bytes());
@@ -280,7 +290,7 @@ fn run_rsync(
                             None => {
                                 error!("Failed to get source file parent directory");
                                 Err("Failed to get source file parent directory")?;
-                            },
+                            }
                         }
                     }
                 } else {
@@ -288,7 +298,13 @@ fn run_rsync(
                     error!("Error: {}", err_msg);
                     if retry_count < 3 {
                         info!("Retrying rsync command...");
-                        let _ = run_rsync(&rsync_hashmap, &dest_user, &dest_host, &dest_dir, retry_count + 1);
+                        let _ = run_rsync(
+                            &rsync_hashmap,
+                            &dest_user,
+                            &dest_host,
+                            &dest_dir,
+                            retry_count + 1,
+                        );
                     } else {
                         for src_file in src_files {
                             let binding = PathBuf::from(src_file);
@@ -304,16 +320,16 @@ fn run_rsync(
                                 None => {
                                     error!("Failed to get source file parent directory");
                                     Err("Failed to get source file parent directory")?;
-                                },
+                                }
                             }
                         }
                     }
                 }
-            }
+            },
             Err(e) => {
                 error!("Failed to execute rsync command. Error: {}", e);
                 Err("Failed to get source file parent directory")?;
-            },
+            }
         }
     }
     Ok(())
@@ -344,7 +360,7 @@ fn load_env_vars() -> (String, String, String, String, String, String, u64, u64)
         template_dir,
         file_suffix,
         csv_event_wait_seconds,
-        csv_event_upper_limit
+        csv_event_upper_limit,
     )
 }
 
@@ -375,7 +391,13 @@ fn load_headers(template_dir: String) -> std::io::Result<HashMap<String, String>
 fn suffix_file_name(src_file: &str, file_suffix: &str) -> std::io::Result<String> {
     // Rename source file by suffixiing source file with timestamp
     let binding = PathBuf::from(src_file);
-    let src_file_basename_no_ext = binding.file_stem().unwrap().to_string_lossy().to_string();
+    let mut src_file_basename_no_ext = binding.file_stem().unwrap().to_string_lossy().to_string();
+    // Truncate if file name exceeds 218 chars. Linux default file name char limit is 255, path char limit is 4096.
+    let max_file_len = 218;
+    if src_file_basename_no_ext.len() > max_file_len {
+        info!("File name too long. Truncating file stem from {:?} to {:?}", src_file_basename_no_ext, &src_file_basename_no_ext[..max_file_len]);
+        src_file_basename_no_ext.truncate(max_file_len);
+    }
     let src_file_extension = binding.extension().unwrap().to_string_lossy().to_string();
     let src_file_suffix = chrono::Local::now().format(file_suffix).to_string();
     let src_file_with_suffix = format!(
@@ -390,9 +412,8 @@ fn suffix_file_name(src_file: &str, file_suffix: &str) -> std::io::Result<String
     Ok(src_file_with_suffix.to_str().unwrap().to_string())
 }
 
-fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
-    // Create metadata file
-    let attr = fs::metadata(src_file)?;
+fn get_file_owner(file_path: &str) -> std::io::Result<String> {
+    let attr = fs::metadata(file_path)?;
     let mut username: String = "".to_string();
     match Command::new("id")
         .arg("-u")
@@ -409,11 +430,18 @@ fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
             } else {
                 username = "".to_string();
             }
-        }
+        },
         Err(e) => {
             error!("Failed to execute id command. Error: {}", e);
         }
     };
+    Ok(username)
+}
+
+fn create_metadata_file(src_file: &str) -> std::io::Result<String> {
+    // Create metadata file
+    let username = get_file_owner(src_file).unwrap();
+    let attr = fs::metadata(src_file)?;
     let elapsed_secs = attr
         .created()?
         .duration_since(std::time::UNIX_EPOCH)
@@ -465,7 +493,7 @@ fn main() -> std::io::Result<()> {
         hashmap,
         file_suffix,
         csv_event_wait_seconds,
-        csv_event_upper_limit
+        csv_event_upper_limit,
     );
     Ok(())
 }
